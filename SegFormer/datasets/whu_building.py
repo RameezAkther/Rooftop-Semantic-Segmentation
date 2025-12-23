@@ -6,8 +6,8 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
-from torchvision import io
 from pycocotools.coco import COCO
+from PIL import Image  # ← use PIL instead of torchvision.io
 
 
 class WHUBuilding(Dataset):
@@ -56,10 +56,13 @@ class WHUBuilding(Dataset):
         file_name = img_info['file_name']   # e.g. "xxx.tif"
         img_path = self.img_dir / file_name
         if not img_path.exists():
-            # fallback if paths in COCO differ
             img_path = next(self.img_dir.glob(file_name.split('/')[-1]))
-        image = io.read_image(str(img_path))   # [C,H,W], uint8
-        return image
+
+        # PIL can read .tif; convert to RGB and then to tensor [C,H,W]
+        img = Image.open(str(img_path)).convert("RGB")
+        img = np.array(img)                  # H,W,3 uint8
+        img = torch.from_numpy(img).permute(2, 0, 1)  # to [C,H,W]
+        return img
 
     def _build_mask(self, img_id: int, height: int, width: int) -> Tensor:
         ann_ids = self.coco.getAnnIds(imgIds=[img_id])
@@ -84,5 +87,5 @@ class WHUBuilding(Dataset):
         if self.transform is not None:
             image, mask = self.transform(image, mask)
 
-        mask = mask.long()   # class ids: 0 or 1
+        mask = mask.long()
         return image, mask
