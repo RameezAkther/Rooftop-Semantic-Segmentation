@@ -34,7 +34,7 @@ class WHUBuilding(Dataset):
             ann_file = self.root / 'annotation' / 'train.json'
         else:
             img_dir = self.root / 'val'
-            ann_file = self.root / 'annotation' / 'val.json'
+            ann_file = self.root / 'annotation' / 'validation.json'
 
         if not ann_file.exists():
             raise FileNotFoundError(f"Annotation file not found: {ann_file}")
