@@ -35,8 +35,7 @@ def get_argparser():
     parser.add_argument("--data_root", type=str,
                         default='/kaggle/input/whu-building-rooftop-dataset',
                         help="path to WHU Dataset root")
-    parser.add_argument("--image_size", type=int, default=[512, 512],
-                        help="input size")
+    parser.add_argument("--image_size", type=int, default=512, help="input size")
     parser.add_argument("--ignore_label", type=int, default=255,
                         help="ignore label in loss")
     parser.add_argument("--dataset", type=str, default='whu',
