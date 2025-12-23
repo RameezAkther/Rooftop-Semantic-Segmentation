@@ -82,10 +82,14 @@ class WHUBuilding(Dataset):
         img_info = self.coco.loadImgs([img_id])[0]
 
         image = self._load_image(img_info)                           # [C,H,W]
-        mask = self._build_mask(img_id, img_info['height'], img_info['width'])  # [H,W]
+        mask  = self._build_mask(img_id, img_info['height'], img_info['width'])  # [H,W]
 
+        # add channel dim so transforms see it as [1,H,W]
         if self.transform is not None:
+            mask = mask.unsqueeze(0)          # [1,H,W]
             image, mask = self.transform(image, mask)
+            mask = mask.squeeze(0)            # back to [H,W]
 
         mask = mask.long()
         return image, mask
+
