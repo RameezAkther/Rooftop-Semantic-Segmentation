@@ -66,6 +66,7 @@ def get_argparser():
 
     # Loss Options
     parser.add_argument("--loss_fn_name", type=str, default='OhemCrossEntropy')
+    parser.add_argument("--lambda_edge", type=float, default=0.3, help='weight for boundary loss')
 
     # Optimizer & LR-scheduler Options
     parser.add_argument("--optimizer", type=str, default='adamw')
@@ -148,7 +149,8 @@ def main(args):
         checkpoint_save_path = './save_weights/best_model.pth'
         checkpoint = torch.load(checkpoint_save_path, map_location='cpu')
 
-        model.load_state_dict(checkpoint['model_state'])
+        # allow loading checkpoints that don't have the new edge head (strict=False)
+        model.load_state_dict(checkpoint['model_state'], strict=False)
         scheduler.load_state_dict(checkpoint["scheduler_state"])
         best_mIoU = checkpoint['best_mIoU']
         optimizer.load_state_dict(checkpoint["optimizer_state"])

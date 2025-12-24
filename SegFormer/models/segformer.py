@@ -178,10 +178,13 @@ class Segformer(nn.Module):
             nn.Upsample(scale_factor = 2 ** i)
         ) for i, dim in enumerate(dims)])
 
-        self.to_segmentation = nn.Sequential(
+        # fusion conv -> produce a shared fused feature, then separate heads for mask and edge
+        self.fuse_conv = nn.Sequential(
             nn.Conv2d(4 * decoder_dim, decoder_dim, 1),
-            nn.Conv2d(decoder_dim, num_classes, 1),
+            nn.ReLU(inplace=True)
         )
+        self.mask_head = nn.Conv2d(decoder_dim, num_classes, 1)
+        self.edge_head = nn.Conv2d(decoder_dim, 1, 1)  # boundary map logits
 
 
     def forward(self, x):
@@ -189,9 +192,16 @@ class Segformer(nn.Module):
 
         fused = [to_fused(output) for output, to_fused in zip(layer_outputs, self.to_fused)]
         fused = torch.cat(fused, dim = 1)
-        out = self.to_segmentation(fused)
-        out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=False)
-        return out
+        feat = self.fuse_conv(fused)
+
+        mask_logits = self.mask_head(feat)
+        edge_logits = self.edge_head(feat)
+
+        mask_logits = F.interpolate(mask_logits, size=x.shape[2:], mode='bilinear', align_corners=False)
+        edge_logits = F.interpolate(edge_logits, size=x.shape[2:], mode='bilinear', align_corners=False)
+
+        # return both mask and edge logits
+        return mask_logits, edge_logits
 
 
 @register_model

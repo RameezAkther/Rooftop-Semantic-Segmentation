@@ -91,5 +91,15 @@ class WHUBuilding(Dataset):
             mask = mask.squeeze(0)            # back to [H,W]
 
         mask = mask.long()
-        return image, mask
+
+        # Build edge GT: edge = mask - erode(mask) with 3x3 kernel
+        # erosion: pixel remains 1 only if all 3x3 neighbors are 1
+        import torch.nn.functional as F
+        mask_float = mask.unsqueeze(0).unsqueeze(0).float()  # [1,1,H,W]
+        kernel = torch.ones((1, 1, 3, 3), dtype=torch.float32)
+        conv = F.conv2d(mask_float, kernel, padding=1)
+        eroded = (conv == 9).squeeze(0).squeeze(0).to(dtype=torch.uint8)
+        edge = (mask - eroded).clamp(0, 1).to(dtype=torch.uint8)
+
+        return image, mask, edge
 
