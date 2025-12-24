@@ -67,6 +67,8 @@ def get_argparser():
     # Loss Options
     parser.add_argument("--loss_fn_name", type=str, default='OhemCrossEntropy')
     parser.add_argument("--lambda_edge", type=float, default=0.3, help='weight for boundary loss')
+    parser.add_argument("--scale_aware", type=bool, default=True, help='enable scale-aware oversampling for train set')
+    parser.add_argument("--small_area", type=int, default=32, help='small object threshold side length in pixels (e.g. 32)')
 
     # Optimizer & LR-scheduler Options
     parser.add_argument("--optimizer", type=str, default='adamw')
@@ -110,8 +112,8 @@ def main(args):
         train_set = CityScapes(args.data_root, 'train', train_transform)
         valid_set = CityScapes(args.data_root, 'val', val_transform)
     elif args.dataset == 'whu':
-        train_set = WHUBuilding(args.data_root, 'train', train_transform)
-        valid_set = WHUBuilding(args.data_root, 'val', val_transform)
+        train_set = WHUBuilding(args.data_root, 'train', train_transform, scale_aware=args.scale_aware, small_area=args.small_area)
+        valid_set = WHUBuilding(args.data_root, 'val', val_transform, scale_aware=False)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 

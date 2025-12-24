@@ -2,7 +2,7 @@ import torch
 import math
 from torch.nn import functional as F
 from tqdm import tqdm
-from utils.metrics import Metrics
+from utils.metrics import Metrics, boundary_f1
 from torch.cuda.amp import autocast
 import utils.distributed_utils as utils
 from utils.losses import Dice
@@ -19,6 +19,14 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
+
+    def _binary_dice(preds, targets, eps=1e-6):
+        preds_flat = preds.view(preds.size(0), -1)
+        targets_flat = targets.view(targets.size(0), -1).float()
+        inter = (preds_flat * targets_flat).sum(1)
+        union = preds_flat.sum(1) + targets_flat.sum(1)
+        score = (2 * inter + eps) / (union + eps)
+        return (1 - score).mean()
 
     for iter, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
 
@@ -51,32 +59,27 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
             mask_logits = outputs
             edge_logits = None
 
-        # Mask loss: Dice + CrossEntropy
-        probs = torch.softmax(mask_logits, dim=1)
-        dice_fn = Dice()
-        mask_dice = dice_fn(probs, lbl)
-        mask_ce = torch.nn.functional.cross_entropy(mask_logits, lbl, ignore_index=args.ignore_label)
-        mask_loss = mask_ce + mask_dice
+        # Mask loss: combine configured loss (e.g. OHEM/CE/Focal) with Dice
+        # dice: handle binary (2-class) specially, otherwise use multiclass Dice
+        if mask_logits.shape[1] == 2:
+            probs_fg = torch.softmax(mask_logits, dim=1)[:, 1, :, :]
+            dice_loss_mask = _binary_dice(probs_fg, (lbl == 1).float())
+        else:
+            dice_fn = Dice()
+            probs = torch.softmax(mask_logits, dim=1)
+            dice_loss_mask = dice_fn(probs, lbl)
+
+        ce_loss = loss_fn(mask_logits, lbl)
+        mask_loss = 0.5 * ce_loss + 0.5 * dice_loss_mask
 
         total_loss = mask_loss
 
         # Edge loss if provided by dataset and model
         if (edge_logits is not None) and (edge is not None):
-            bce_fn = torch.nn.BCEWithLogitsLoss()
             edge_logits_s = edge_logits.squeeze(1)
-            edge_bce = bce_fn(edge_logits_s, edge.float())
-
+            edge_bce = torch.nn.functional.binary_cross_entropy_with_logits(edge_logits_s, edge.float())
             edge_probs = torch.sigmoid(edge_logits_s)
-
-            def binary_dice(pred, target, eps=1e-6):
-                pred_flat = pred.view(pred.size(0), -1)
-                tgt_flat = target.view(target.size(0), -1).float()
-                inter = (pred_flat * tgt_flat).sum(1)
-                union = pred_flat.sum(1) + tgt_flat.sum(1)
-                score = (2 * inter + eps) / (union + eps)
-                return (1 - score).mean()
-
-            edge_dice = binary_dice(edge_probs, edge)
+            edge_dice = _binary_dice(edge_probs, edge)
             edge_loss = edge_bce + edge_dice
             lambda_edge = getattr(args, 'lambda_edge', 0.3)
             total_loss = mask_loss + lambda_edge * edge_loss
@@ -113,6 +116,8 @@ def evaluate(args, model, dataloader, device, print_freq):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
 
+    boundary_scores = []
+
     for batch in metric_logger.log_every(dataloader, print_freq, header):
         # support (images, labels) or (images, labels, edge)
         if len(batch) == 2:
@@ -129,9 +134,23 @@ def evaluate(args, model, dataloader, device, print_freq):
             mask_logits = outputs[0]
         else:
             mask_logits = outputs
+
         confmat.update(labels.flatten(), mask_logits.argmax(1).flatten())
 
+        # compute boundary F1 per batch (using predicted mask)
+        try:
+            f1 = boundary_f1(mask_logits.detach().cpu(), labels.detach().cpu())
+            boundary_scores.append(f1)
+        except Exception:
+            # if shapes/types unexpected, skip boundary metric
+            pass
+
     confmat.reduce_from_all_processes()
+
+    if len(boundary_scores) > 0:
+        avg_bf1 = sum(boundary_scores) / len(boundary_scores)
+        print(f"Boundary F1 (mean over batches): {avg_bf1:.4f}")
+
     return confmat
 
 

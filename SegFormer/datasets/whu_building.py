@@ -19,8 +19,9 @@ class WHUBuilding(Dataset):
 
     CLASSES = ['background', 'building']
 
-    def __init__(self, root: str, split: str = 'train', transform=None) -> None:
+    def __init__(self, root: str, split: str = 'train', transform=None, scale_aware: bool = True, small_area: int = 32) -> None:
         super().__init__()
+        import random
         assert split in ['train', 'val']
         self.transform = transform
         self.n_classes = len(self.CLASSES)
@@ -28,6 +29,8 @@ class WHUBuilding(Dataset):
 
         self.root = Path(root)
         self.split = split
+        self.scale_aware = scale_aware
+        self.small_area = small_area
 
         if split == 'train':
             img_dir = self.root / 'train'
@@ -45,11 +48,31 @@ class WHUBuilding(Dataset):
         if len(self.ids) == 0:
             raise RuntimeError(f"No images found for split={split} in {img_dir}")
 
+        # Precompute images containing small roofs (for oversampling)
+        self.small_img_ids = []
+        if self.scale_aware and self.split == 'train':
+            for img_id in self.ids:
+                ann_ids = self.coco.getAnnIds(imgIds=[img_id])
+                anns = self.coco.loadAnns(ann_ids)
+                has_small = False
+                for ann in anns:
+                    # bbox: [x,y,width,height]
+                    bbox_area = ann['bbox'][2] * ann['bbox'][3]
+                    if bbox_area < (self.small_area * self.small_area):
+                        has_small = True
+                        break
+                if has_small:
+                    self.small_img_ids.append(img_id)
+            print(f"Found {len(self.small_img_ids)}/{len(self.ids)} images with small roofs")
+
         print(f"WHU {split}: {len(self.ids)} images, "
               f"{len(self.coco.anns)} annotations, "
               f"categories: {self.coco.cats}")
 
     def __len__(self) -> int:
+        # if scale-aware oversampling is enabled for training, length increases to include oversampled small images
+        if hasattr(self, 'small_img_ids') and len(self.small_img_ids) > 0 and self.split == 'train':
+            return max(len(self.ids), len(self.small_img_ids) * 3)
         return len(self.ids)
 
     def _load_image(self, img_info) -> Tensor:
@@ -77,8 +100,17 @@ class WHUBuilding(Dataset):
 
         return torch.from_numpy(mask.astype(np.uint8))  # [H,W], 0/1
 
-    def __getitem__(self, index: int) -> Tuple[Tensor, Tensor]:
-        img_id = self.ids[index]
+    def __getitem__(self, index: int) -> Tuple[Tensor, Tensor, Tensor]:
+        # sample from small roofs with higher probability during training
+        if hasattr(self, 'small_img_ids') and len(self.small_img_ids) > 0 and self.split == 'train':
+            import random
+            if random.random() < 0.6:
+                img_id = random.choice(self.small_img_ids)
+            else:
+                img_id = self.ids[index % len(self.ids)]
+        else:
+            img_id = self.ids[index % len(self.ids)]
+
         img_info = self.coco.loadImgs([img_id])[0]
 
         image = self._load_image(img_info)                           # [C,H,W]

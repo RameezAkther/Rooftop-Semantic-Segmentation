@@ -173,14 +173,23 @@ class Segformer(nn.Module):
             num_layers = num_layers
         )
 
-        self.to_fused = nn.ModuleList([nn.Sequential(
-            nn.Conv2d(dim, decoder_dim, 1),
-            nn.Upsample(scale_factor = 2 ** i)
-        ) for i, dim in enumerate(dims)])
+        # UNet-style decoder:
+        # map each encoder stage to a reduced channel representation
+        mid_ch = max(32, decoder_dim // 4)
+        self.to_fused = nn.ModuleList([nn.Conv2d(dim, mid_ch, 1) for dim in dims])
 
-        # fusion conv -> produce a shared fused feature, then separate heads for mask and edge
+        # decoder upsamples progressively and merges skips
+        self.decoder = nn.ModuleList([
+            nn.ConvTranspose2d(mid_ch, mid_ch, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(mid_ch, mid_ch, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(mid_ch, mid_ch, kernel_size=2, stride=2)
+        ])
+        # fuse conv after concat
+        self.decode_fuse = nn.ModuleList([nn.Sequential(nn.Conv2d(mid_ch * 2, mid_ch, 1), nn.ReLU(inplace=True)) for _ in range(3)])
+
+        # final projection to decoder_dim and heads
         self.fuse_conv = nn.Sequential(
-            nn.Conv2d(4 * decoder_dim, decoder_dim, 1),
+            nn.Conv2d(mid_ch, decoder_dim, 1),
             nn.ReLU(inplace=True)
         )
         self.mask_head = nn.Conv2d(decoder_dim, num_classes, 1)
@@ -190,9 +199,28 @@ class Segformer(nn.Module):
     def forward(self, x):
         layer_outputs = self.mit(x, return_layer_outputs = True)
 
-        fused = [to_fused(output) for output, to_fused in zip(layer_outputs, self.to_fused)]
-        fused = torch.cat(fused, dim = 1)
-        feat = self.fuse_conv(fused)
+        # map encoder outputs
+        feats = [to_f(output) for output, to_f in zip(layer_outputs, self.to_fused)]  # list of [B,mid_ch,H_i,W_i]
+
+        # start from deepest feature and upsample progressively with skips
+        x3 = feats[3]
+        # up to match feats[2]
+        x2 = self.decoder[0](x3)
+        skip2 = feats[2]
+        x2 = self.decode_fuse[0](torch.cat([x2, skip2], dim=1))
+
+        # up to match feats[1]
+        x1 = self.decoder[1](x2)
+        skip1 = feats[1]
+        x1 = self.decode_fuse[1](torch.cat([x1, skip1], dim=1))
+
+        # up to match feats[0]
+        x0 = self.decoder[2](x1)
+        skip0 = feats[0]
+        x0 = self.decode_fuse[2](torch.cat([x0, skip0], dim=1))
+
+        # final feature projection
+        feat = self.fuse_conv(x0)
 
         mask_logits = self.mask_head(feat)
         edge_logits = self.edge_head(feat)
@@ -200,7 +228,6 @@ class Segformer(nn.Module):
         mask_logits = F.interpolate(mask_logits, size=x.shape[2:], mode='bilinear', align_corners=False)
         edge_logits = F.interpolate(edge_logits, size=x.shape[2:], mode='bilinear', align_corners=False)
 
-        # return both mask and edge logits
         return mask_logits, edge_logits
 
 
