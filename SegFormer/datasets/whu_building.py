@@ -98,7 +98,29 @@ class WHUBuilding(Dataset):
             m = self.coco.annToMask(ann)
             mask = np.maximum(mask, m)
 
-        return torch.from_numpy(mask.astype(np.uint8))  # [H,W], 0/1
+        return torch.from_numpy(mask.astype(np.uint8))  # [H,W]
+
+    def compute_edge(self, mask: Tensor) -> Tensor:
+        """
+        Compute binary edge map from a mask with values {0,1} and ignore pixels marked by self.ignore_label.
+        Edge = binary_mask - eroded(binary_mask), and edges in ignored pixels are set to 0.
+        Returns uint8 tensor [H,W] with values 0/1.
+        """
+        import torch.nn.functional as F
+
+        # valid pixels are those not equal to ignore_label
+        valid_pixels = (mask != self.ignore_label)
+        binary_mask = (mask == 1).to(dtype=torch.uint8)
+
+        mask_float = binary_mask.unsqueeze(0).unsqueeze(0).float()  # [1,1,H,W]
+        kernel = torch.ones((1, 1, 3, 3), dtype=mask_float.dtype)
+        conv = F.conv2d(mask_float, kernel, padding=1)
+        eroded = (conv == 9).squeeze(0).squeeze(0).to(dtype=torch.uint8)
+        edge = (binary_mask - eroded).clamp(0, 1).to(dtype=torch.uint8)
+
+        # ensure no edge where label is ignore_label
+        edge[~valid_pixels] = 0
+        return edge, 0/1
 
     def __getitem__(self, index: int) -> Tuple[Tensor, Tensor, Tensor]:
         # sample from small roofs with higher probability during training
@@ -124,14 +146,8 @@ class WHUBuilding(Dataset):
 
         mask = mask.long()
 
-        # Build edge GT: edge = mask - erode(mask) with 3x3 kernel
-        # erosion: pixel remains 1 only if all 3x3 neighbors are 1
-        import torch.nn.functional as F
-        mask_float = mask.unsqueeze(0).unsqueeze(0).float()  # [1,1,H,W]
-        kernel = torch.ones((1, 1, 3, 3), dtype=torch.float32)
-        conv = F.conv2d(mask_float, kernel, padding=1)
-        eroded = (conv == 9).squeeze(0).squeeze(0).to(dtype=torch.uint8)
-        edge = (mask - eroded).clamp(0, 1).to(dtype=torch.uint8)
+        # Build edge GT
+        edge = self.compute_edge(mask)
 
         return image, mask, edge
 
