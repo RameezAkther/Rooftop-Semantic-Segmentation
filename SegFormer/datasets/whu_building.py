@@ -48,6 +48,16 @@ class WHUBuilding(Dataset):
         if len(self.ids) == 0:
             raise RuntimeError(f"No images found for split={split} in {img_dir}")
 
+        # determine category ids that correspond to building(s)
+        try:
+            self.building_cat_ids = [cat_id for cat_id, cat in self.coco.cats.items() if 'build' in cat['name'].lower()]
+        except Exception:
+            self.building_cat_ids = []
+
+        if len(self.building_cat_ids) == 0:
+            print(f"[Warning] Could not find 'building' category by name in annotation categories. Falling back to category id 1.")
+            self.building_cat_ids = [1]
+
         # Precompute images containing small roofs (for oversampling)
         self.small_img_ids = []
         if self.scale_aware and self.split == 'train':
@@ -56,6 +66,8 @@ class WHUBuilding(Dataset):
                 anns = self.coco.loadAnns(ann_ids)
                 has_small = False
                 for ann in anns:
+                    if ann['category_id'] not in self.building_cat_ids:
+                        continue
                     # bbox: [x,y,width,height]
                     bbox_area = ann['bbox'][2] * ann['bbox'][3]
                     if bbox_area < (self.small_area * self.small_area):
@@ -145,6 +157,16 @@ class WHUBuilding(Dataset):
             mask = mask.squeeze(0)            # back to [H,W]
 
         mask = mask.long()
+
+        # Sanity check: mask should only contain 0,1 or ignore_label
+        try:
+            unique_vals = torch.unique(mask)
+            allowed = set([0, 1, self.ignore_label])
+            if not set(unique_vals.tolist()).issubset(allowed):
+                print(f"[Warning] Unexpected mask label values: {unique_vals.tolist()}")
+        except Exception:
+            # if unique fails for any reason, skip the check
+            pass
 
         # Build edge GT
         edge = self.compute_edge(mask)

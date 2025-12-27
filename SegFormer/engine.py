@@ -44,6 +44,15 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
         if edge is not None:
             edge = edge.to(device)
 
+        # Quick sanity debug: print foreground ratio for first few batches
+        if iter < 5:
+            with torch.no_grad():
+                fg_ratio = (lbl == 1).float().mean().item()
+                if fg_ratio == 0:
+                    print(f"[Debug] Batch {iter}: no foreground pixels (fg_ratio=0). Check dataset/transforms.")
+                else:
+                    print(f"[Debug] Batch {iter}: foreground ratio = {fg_ratio:.6f}")
+
         optimizer.zero_grad()
 
         if scaler is not None:

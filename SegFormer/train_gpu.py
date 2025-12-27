@@ -65,7 +65,7 @@ def get_argparser():
     parser.add_argument("--val_print_freq", type=int, default=50)
 
     # Loss Options
-    parser.add_argument("--loss_fn_name", type=str, default='OhemCrossEntropy')
+    parser.add_argument("--loss_fn_name", type=str, default='CrossEntropy')
     parser.add_argument("--lambda_edge", type=float, default=0.3, help='weight for boundary loss')
     parser.add_argument("--scale_aware", type=bool, default=True, help='enable scale-aware oversampling for train set')
     parser.add_argument("--small_area", type=int, default=32, help='small object threshold side length in pixels (e.g. 32)')
