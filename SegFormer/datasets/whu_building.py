@@ -120,7 +120,7 @@ class WHUBuilding(Dataset):
 
         # ensure no edge where label is ignore_label
         edge[~valid_pixels] = 0
-        return edge, 0/1
+        return edge
 
     def __getitem__(self, index: int) -> Tuple[Tensor, Tensor, Tensor]:
         # sample from small roofs with higher probability during training
