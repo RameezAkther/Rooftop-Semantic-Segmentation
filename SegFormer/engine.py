@@ -68,6 +68,19 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
             mask_logits = outputs
             edge_logits = None
 
+        # Quick debug: log prediction distribution for early iterations
+        if iter < 10:
+            with torch.no_grad():
+                if mask_logits.shape[1] > 1:
+                    preds = mask_logits.argmax(dim=1)
+                    pred_fg_ratio = (preds == 1).float().mean().item()
+                    probs_fg_mean = torch.softmax(mask_logits, dim=1)[:, 1, :, :].mean().item()
+                    print(f"[Debug] Iter {iter}: pred_fg_ratio={pred_fg_ratio:.6f}, probs_fg_mean={probs_fg_mean:.6f}")
+                else:
+                    # binary logits case
+                    probs_fg_mean = torch.sigmoid(mask_logits).mean().item()
+                    print(f"[Debug] Iter {iter}: probs_fg_mean(binary)={probs_fg_mean:.6f}")
+
         # Mask loss: combine configured loss (e.g. OHEM/CE/Focal) with Dice
         # dice: handle binary (2-class) specially, otherwise use multiclass Dice
         if mask_logits.shape[1] == 2:
@@ -93,7 +106,16 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
             lambda_edge = getattr(args, 'lambda_edge', 0.3)
             total_loss = mask_loss + lambda_edge * edge_loss
 
+            # Debug: print loss breakdown for early iters
+            if iter < 10:
+                print(f"[Debug] Iter {iter}: mask_loss={mask_loss:.6f}, edge_loss={edge_loss:.6f}, lambda_edge={lambda_edge}")
+
         loss = total_loss
+
+        # Debug: print total loss and lr for early iters
+        if iter < 5:
+            lr_debug = optimizer.param_groups[0]["lr"]
+            print(f"[Debug] Iter {iter}: total_loss={loss.item():.6f}, lr={lr_debug:.8f}")
 
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -127,7 +149,7 @@ def evaluate(args, model, dataloader, device, print_freq):
 
     boundary_scores = []
 
-    for batch in metric_logger.log_every(dataloader, print_freq, header):
+    for batch_i, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
         # support (images, labels) or (images, labels, edge)
         if len(batch) == 2:
             images, labels = batch
@@ -143,6 +165,18 @@ def evaluate(args, model, dataloader, device, print_freq):
             mask_logits = outputs[0]
         else:
             mask_logits = outputs
+
+        # Debug: print prediction distribution and gt ratio for first few val batches
+        if batch_i < 10:
+            with torch.no_grad():
+                preds = mask_logits.argmax(1)
+                pred_fg_ratio = (preds == 1).float().mean().item()
+                gt_fg_ratio = (labels == 1).float().mean().item()
+                try:
+                    probs_fg_mean = torch.softmax(mask_logits, dim=1)[:, 1, :, :].mean().item()
+                except Exception:
+                    probs_fg_mean = torch.sigmoid(mask_logits).mean().item()
+                print(f"[Val Debug] batch {batch_i}: pred_fg_ratio={pred_fg_ratio:.6f}, gt_fg_ratio={gt_fg_ratio:.6f}, probs_fg_mean={probs_fg_mean:.6f}")
 
         confmat.update(labels.flatten(), mask_logits.argmax(1).flatten())
 
