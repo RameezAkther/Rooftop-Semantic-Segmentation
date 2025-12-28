@@ -117,13 +117,44 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
             lr_debug = optimizer.param_groups[0]["lr"]
             print(f"[Debug] Iter {iter}: total_loss={loss.item():.6f}, lr={lr_debug:.8f}")
 
+        # Detect NaN/Inf in loss before backward
+        if torch.isnan(loss) or torch.isinf(loss):
+            # log diagnostics for debugging
+            print(f"[ERROR] NaN or Inf loss detected at iter={iter}")
+            try:
+                print(f"lr={optimizer.param_groups[0]['lr']}")
+                print(f"mask_logits min/max/mean: {mask_logits.min().item()}/{mask_logits.max().item()}/{mask_logits.mean().item()}")
+                if edge_logits is not None:
+                    print(f"edge_logits min/max/mean: {edge_logits.min().item()}/{edge_logits.max().item()}/{edge_logits.mean().item()}")
+                print(f"lbl unique: {torch.unique(lbl)}")
+                if edge is not None:
+                    print(f"edge unique: {torch.unique(edge)}")
+            except Exception as e:
+                print(f"Diagnostic print failed: {e}")
+            raise RuntimeError("NaN loss encountered; aborting to allow inspection")
+
+        # backward with optional AMP
         if scaler is not None:
             scaler.scale(loss).backward()
+            # gradient clipping (AMP-compatible)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            optimizer.step()
+            # gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            # check for NaN/Inf in gradients
+            grad_nan = False
+            for p in model.parameters():
+                if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
+                    grad_nan = True
+                    break
+            if grad_nan:
+                print(f"[ERROR] NaN/Inf found in gradients at iter={iter}; skipping optimizer step")
+                optimizer.zero_grad()
+            else:
+                optimizer.step()
 
         scheduler.step()
         torch.cuda.synchronize()
