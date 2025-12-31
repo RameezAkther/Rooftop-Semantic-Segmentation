@@ -20,6 +20,14 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
 
+    # Automatic NaN recovery: keep a recent good checkpoint and try to restore when NaNs occur
+    last_good_state = None
+    nan_retries = 0
+    max_nan_retries = getattr(args, 'max_nan_retries', 3)
+    nan_lr_reduce = getattr(args, 'nan_lr_reduce', 0.2)
+    nan_save_every = 50  # how often (in iterations) to refresh last_good_state
+
+
     def _binary_dice(preds, targets, eps=1e-6):
         preds_flat = preds.view(preds.size(0), -1)
         targets_flat = targets.view(targets.size(0), -1).float()
@@ -29,6 +37,18 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
         return (1 - score).mean()
 
     for iter, batch in enumerate(metric_logger.log_every(dataloader, print_freq, header)):
+
+        # Save a recent good state periodically so we can recover if a NaN occurs
+        if (iter % nan_save_every) == 0 or last_good_state is None:
+            try:
+                last_good_state = {
+                    'model': {k: v.cpu() for k, v in model.state_dict().items()},
+                    'optimizer': optimizer.state_dict(),
+                    'scaler': scaler.state_dict() if scaler is not None else None,
+                    'scheduler': scheduler.state_dict() if scheduler is not None else None
+                }
+            except Exception as e:
+                print(f"[WARN] Failed to save last_good_state: {e}")
 
         # support datasets that return (img, label) or (img, label, edge)
         if len(batch) == 2:
@@ -119,19 +139,48 @@ def train_one_epoch(args, model, optimizer, loss_fn, dataloader, sampler, schedu
 
         # Detect NaN/Inf in loss before backward
         if torch.isnan(loss) or torch.isinf(loss):
-            # log diagnostics for debugging
             print(f"[ERROR] NaN or Inf loss detected at iter={iter}")
+
+            # Save quick debug dump for inspection
             try:
-                print(f"lr={optimizer.param_groups[0]['lr']}")
-                print(f"mask_logits min/max/mean: {mask_logits.min().item()}/{mask_logits.max().item()}/{mask_logits.mean().item()}")
-                if edge_logits is not None:
-                    print(f"edge_logits min/max/mean: {edge_logits.min().item()}/{edge_logits.max().item()}/{edge_logits.mean().item()}")
-                print(f"lbl unique: {torch.unique(lbl)}")
-                if edge is not None:
-                    print(f"edge unique: {torch.unique(edge)}")
+                torch.save({
+                    'epoch': epoch, 'iter': iter,
+                    'img': img.detach().cpu(),
+                    'lbl': lbl.detach().cpu(),
+                    'edge': edge.detach().cpu() if edge is not None else None,
+                    'mask_logits': mask_logits.detach().cpu() if 'mask_logits' in locals() and mask_logits is not None else None,
+                    'edge_logits': edge_logits.detach().cpu() if 'edge_logits' in locals() and edge_logits is not None else None,
+                }, f'nan_debug_epoch{epoch}_iter{iter}.pt')
+                print(f"[ERROR] Saved NaN debug dump: nan_debug_epoch{epoch}_iter{iter}.pt")
             except Exception as e:
-                print(f"Diagnostic print failed: {e}")
-            raise RuntimeError("NaN loss encountered; aborting to allow inspection")
+                print(f"[ERROR] Could not save debug dump: {e}")
+
+            # Attempt automatic recovery: restore last good state and reduce lr
+            if last_good_state is not None and nan_retries < max_nan_retries:
+                print(f"[RECOVERY] Restoring last good state and reducing LR by factor {nan_lr_reduce} (attempt {nan_retries+1}/{max_nan_retries})")
+                try:
+                    model.load_state_dict(last_good_state['model'])
+                except Exception as e:
+                    print(f"[RECOVERY] model load failed: {e}")
+                try:
+                    optimizer.load_state_dict(last_good_state['optimizer'])
+                    for g in optimizer.param_groups:
+                        g['lr'] = g.get('lr', 0.0) * nan_lr_reduce
+                except Exception as e:
+                    print(f"[RECOVERY] optimizer restore failed: {e}")
+                if scaler is not None and last_good_state.get('scaler') is not None:
+                    try:
+                        scaler.load_state_dict(last_good_state['scaler'])
+                    except Exception as e:
+                        print(f"[RECOVERY] scaler restore failed: {e}")
+
+                # zero grads and skip this batch
+                optimizer.zero_grad()
+                nan_retries += 1
+                continue
+            else:
+                print("[ERROR] No last good state available or max retries exceeded; aborting.")
+                raise RuntimeError("NaN loss encountered and recovery failed")
 
         # backward with optional AMP
         if scaler is not None:

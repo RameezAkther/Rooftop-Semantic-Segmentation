@@ -60,6 +60,10 @@ def get_argparser():
     parser.add_argument("--device", type=str, default='cuda:0', help='device (cuda:0 or cpu)')
     parser.add_argument("--num_workers", type=int, default=0,
                         help='num_workers, set it equal 0 when run programs in win platform')
+
+    # NaN recovery options
+    parser.add_argument("--max_nan_retries", type=int, default=3, help='max automatic NaN recovery attempts per epoch')
+    parser.add_argument("--nan_lr_reduce", type=float, default=0.2, help='LR multiplier applied when recovering from NaN (e.g., 0.2 scales lr by 0.2)')
     parser.add_argument("--DDP", type=bool, default=False)
     parser.add_argument("--train_print_freq", type=int, default=100)
     parser.add_argument("--val_print_freq", type=int, default=50)
