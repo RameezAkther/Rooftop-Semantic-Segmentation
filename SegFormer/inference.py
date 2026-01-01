@@ -100,7 +100,6 @@ def infer_on_directory(checkpoint_path: str, input_dir: str, output_dir: str,
         if save_overlay:
             orig_pil = Image.open(str(p)).convert('RGB')
             # create a simple overlay using class ids (pred_cls) so colors map correctly
-            import numpy as np
             pred_cls_resized = np.array(Image.fromarray(pred_cls).resize((orig_w, orig_h), resample=Image.NEAREST))
             color_mask = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
             # assign coloring for up to 4 classes (extendable)
