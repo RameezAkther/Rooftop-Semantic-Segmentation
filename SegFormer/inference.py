@@ -81,8 +81,16 @@ def infer_on_directory(checkpoint_path: str, input_dir: str, output_dir: str,
             mask_logits, _ = model(x)
             preds = torch.argmax(mask_logits, dim=1).squeeze(0).cpu().to(torch.uint8)  # [Hp,Wp]
 
-        # convert to PIL and resize to original size using nearest neigh
-        pred_pil = Image.fromarray(preds.numpy())
+        # convert to numpy class ids and also create a visible mask scaled to 0-255
+        pred_cls = preds.numpy().astype(np.uint8)  # class ids per pixel
+        # make a grayscale visibility image: scale 0/1 -> 0/255, otherwise normalize to 0-255
+        if pred_cls.max() <= 1:
+            pred_vis = (pred_cls * 255).astype(np.uint8)
+        else:
+            maxv = float(pred_cls.max())
+            pred_vis = ((pred_cls.astype(float) / maxv) * 255).astype(np.uint8)
+
+        pred_pil = Image.fromarray(pred_vis, mode='L')
         pred_pil = pred_pil.resize((orig_w, orig_h), resample=Image.NEAREST)
 
         # save predicted mask
@@ -91,11 +99,11 @@ def infer_on_directory(checkpoint_path: str, input_dir: str, output_dir: str,
 
         if save_overlay:
             orig_pil = Image.open(str(p)).convert('RGB')
-            # create a simple overlay: red for class 1 (if exists)
+            # create a simple overlay using class ids (pred_cls) so colors map correctly
             import numpy as np
+            pred_cls_resized = np.array(Image.fromarray(pred_cls).resize((orig_w, orig_h), resample=Image.NEAREST))
             color_mask = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
-            pred_np = np.array(pred_pil)
-            # assign coloring for up to 3 classes (extendable)
+            # assign coloring for up to 4 classes (extendable)
             cmap = {
                 0: (0, 0, 0),
                 1: (255, 0, 0),
@@ -103,7 +111,7 @@ def infer_on_directory(checkpoint_path: str, input_dir: str, output_dir: str,
                 3: (0, 0, 255)
             }
             for k, col in cmap.items():
-                color_mask[pred_np == k] = col
+                color_mask[pred_cls_resized == k] = col
             overlay = (0.6 * np.array(orig_pil).astype(float) + 0.4 * color_mask.astype(float)).astype(np.uint8)
             Image.fromarray(overlay).save(Path(output_dir) / (p.stem + '_overlay.png'))
 
